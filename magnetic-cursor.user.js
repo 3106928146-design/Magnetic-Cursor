@@ -2,9 +2,9 @@
 // @name         Magnetic Cursor
 // @name:zh-CN   磁吸光标
 // @namespace    https://github.com/<your-handle>/magnetic-cursor
-// @version      0.2.3
-// @description  Magnetic cursor that snaps to nearest text position — like macOS in your browser
-// @description:zh-CN  鼠标在文本上移动时自动吸附到最近的文字插入位置，像 macOS 原生体验
+// @version      0.2.5
+// @description  Magnetic cursor that snaps to nearest text position
+// @description:zh-CN  鼠标在文本上移动时自动吸附到最近的文字插入位置
 // @author       you
 // @match        *://*/*
 // @grant        GM_setValue
@@ -17,7 +17,7 @@
 // @run-at       document-idle
 // ==/UserScript==
 /*!
- * Magnetic Cursor v0.2.3
+ * Magnetic Cursor v0.2.5
  * https://github.com/<your-handle>/magnetic-cursor
  * MIT License
  */
@@ -70,6 +70,18 @@
 
     // --- 功能开关 ---
     enabled: true,              // 插件默认是否启用
+
+    // --- 选字模式 ---
+    // 'rightClick' = 右键按住拖动选字（默认）。'key' = 按住键盘键 + 移动鼠标选字
+    selectionMode: 'key',
+    // 当 selectionMode = 'key' 时，按住此键 + 移动鼠标即可选字。可选 'F' / 'G' / 'H'
+    selectionKey: 'F',
+
+    // --- 精密模式 ---
+    // 当检测到字体小于阈值时，光标移动速度自动减慢，便于精准对准小字。按 Shift 恢复原速。
+    precisionModeEnabled: true,    // 是否启用精密模式
+    precisionFontThreshold: 20,    // 字体阈值（像素），文字字号小于此值触发减速
+    precisionSlowFactor: 0.5,      // 减速系数（0 ~ 1），默认 0.5 即一半速度
   };
 
   // 持久化默认值（从 CONFIG 读取，不需要手动修改）
@@ -87,7 +99,14 @@
   let rightDragStarted = false;
   let rightStartX = 0;
   let rightStartY = 0;
+  let selectionKeyDown = false; // 键盘选字模式：按键是否正被按住
   let lastFrameTime = 0;       // 帧率限制用
+  let lastSnappedLeft = 0;     // 上次吸附的文字行原始 left（未经垂直居中偏移）
+  let lastSnappedTop = 0;      // 上次吸附的文字行原始 top（未经垂直居中偏移）
+  let currentFontSize = 16;    // 当前光标所在文字的字号（用于精密模式判断）
+  let shiftKeyDown = false;    // Shift 是否按下（精密模式下按住可恢复原速）
+  let lastMouseX = 0;          // 上一帧鼠标吸附到的文字行 left（用于计算鼠标位移增量）
+  let lastMouseY = 0;          // 上一帧鼠标吸附到的文字行 top
 
   // JS 平滑插值状态
   let smoothRafId = null;
@@ -210,6 +229,24 @@
     return false;
   }
 
+  /**
+   * 递归穿透 open Shadow DOM，找到鼠标位置下最内层的可见元素。
+   * Bilibili 评论区、Lit 组件等场景都需要这个能力。
+   */
+  function getDeepestElementAtPoint(x, y, root = document) {
+    try {
+      const el = root.elementFromPoint(x, y);
+      if (!el) return null;
+      if (el.shadowRoot && el.shadowRoot.mode === 'open' && isElementVisible(el)) {
+        const inner = getDeepestElementAtPoint(x, y, el.shadowRoot);
+        return inner || el;
+      }
+      return el;
+    } catch (_) {
+      return null;
+    }
+  }
+
   function getTextPosition(x, y) {
     try {
       if (document.caretRangeFromPoint) {
@@ -223,7 +260,7 @@
         range.collapse(true);
         return range;
       }
-    } catch (_) {}
+    } catch (_) { }
     return null;
   }
 
@@ -238,7 +275,7 @@
       if (rect && rect.height > 0) {
         return rect;
       }
-    } catch (_) {}
+    } catch (_) { }
     return null;
   }
 
@@ -422,7 +459,7 @@
     ripple.style.setProperty('z-index', '2147483646', 'important');
     ripple.style.setProperty('opacity', String(CONFIG.rippleOpacity), 'important');
     ripple.style.setProperty('transform', `translate(${x}px, ${y}px) scale(1)`, 'important');
-    ripple.style.setProperty('box-shadow', `0 0 ${CONFIG.rippleGlowStart}px ${CONFIG.rippleGlowStart/4}px rgba(${r}, ${g}, ${b}, ${CONFIG.rippleOpacity})`, 'important');
+    ripple.style.setProperty('box-shadow', `0 0 ${CONFIG.rippleGlowStart}px ${CONFIG.rippleGlowStart / 4}px rgba(${r}, ${g}, ${b}, ${CONFIG.rippleOpacity})`, 'important');
     ripple.style.setProperty('will-change', 'transform, opacity', 'important');
     document.body.appendChild(ripple);
 
@@ -443,7 +480,7 @@
 
       ripple.style.setProperty('transform', `translate(${x}px, ${y}px) scale(${scale})`, 'important');
       ripple.style.setProperty('opacity', String(opacity), 'important');
-      ripple.style.setProperty('box-shadow', `0 0 ${glowSize}px ${glowSize/4}px rgba(${r}, ${g}, ${b}, ${glowAlpha})`, 'important');
+      ripple.style.setProperty('box-shadow', `0 0 ${glowSize}px ${glowSize / 4}px rgba(${r}, ${g}, ${b}, ${glowAlpha})`, 'important');
 
       if (t < 1) {
         requestAnimationFrame(animateRipple);
@@ -482,12 +519,12 @@
       return;
     }
 
-    const { x, y } = pending;
-    pending = null;
+    const { x, y } = pending;  // 鼠标当前视口坐标
+    pending = null;            // 清空，等待下一次 mousemove 填入
 
-    let el;
+    let el;                    // 鼠标所指的最内层可见 DOM 元素（穿透 Shadow DOM）
     try {
-      el = document.elementFromPoint(x, y);
+      el = getDeepestElementAtPoint(x, y);
     } catch (_) {
       caret.hide();
       return;
@@ -498,35 +535,85 @@
       return;
     }
 
-    const range = getTextPosition(x, y);
+    const range = getTextPosition(x, y);  // 鼠标位置对应的折叠 Range（光标在文字中的位置）
     if (!range) {
       caret.hide();
       return;
     }
 
-    const rect = getCaretRect(range);
+    const rect = getCaretRect(range);  // Range 在页面上的像素矩形 { left, top, height, width }
     if (!rect) {
       caret.hide();
       return;
     }
 
     if (rect.left < 0 || rect.top < 0 ||
-        rect.left > window.innerWidth || rect.top > window.innerHeight) {
+      rect.left > window.innerWidth || rect.top > window.innerHeight) {
       caret.hide();
       return;
     }
 
-    const h = Math.max(rect.height * CONFIG.caretHeightMultiplier, CONFIG.caretMinHeight);
+    const h = Math.max(rect.height * CONFIG.caretHeightMultiplier, CONFIG.caretMinHeight);  // 光标最终高度
     // 垂直居中：光标中心对齐到文字行的中心线
-    const top = rect.top + (rect.height - h) / 2;
+    const top = rect.top + (rect.height - h) / 2;  // 居中后的光标顶部坐标
+
+    // 记录当前字号（从 caret range 的文本父元素取 CSS font-size）
+    try {
+      const container = range.startContainer;  // 文本节点
+      const parent = container.nodeType === Node.TEXT_NODE ? container.parentElement : container;  // 文本所在元素
+      currentFontSize = parent ? parseFloat(getComputedStyle(parent).fontSize) || rect.height : rect.height;  // 字号 px
+    } catch (_) {
+      currentFontSize = rect.height;  // 兜底：取行高
+    }
+
+    // 保存原始文字行坐标（未经居中偏移），供按键选字时用
+    lastSnappedLeft = rect.left;
+    lastSnappedTop = rect.top;
+
+    // 精密模式：小字体时位移减半，按住 Shift 恢复 1:1
+    let snapLeft = rect.left;  // 光标目标的横向坐标（默认 = 文字行 left）
+    let snapTop = top;         // 光标目标的纵向坐标（默认 = 居中后的 top）
+    let precisionActive = false;
+    if (CONFIG.precisionModeEnabled &&
+      currentFontSize > 0 &&
+      currentFontSize < CONFIG.precisionFontThreshold &&
+      shiftKeyDown &&
+      caret.visible &&
+      lastMouseX !== 0 && lastMouseY !== 0) {  // 首帧不缩放（lastMouse 还未初始化）
+      precisionActive = true;
+      // 只缩放鼠标位移增量：光标位置 + 鼠标位移 × slowFactor
+      const dx = rect.left - lastMouseX;   // 鼠标这一帧的横向位移
+      const dy = top - lastMouseY;          // 鼠标这一帧的纵向位移
+      snapLeft = currentX + dx * CONFIG.precisionSlowFactor;
+      snapTop = currentY + dy * CONFIG.precisionSlowFactor;
+    }
+
+    // 无论精密模式是否触发，都保存当前帧坐标供下帧计算鼠标位移增量
+    lastMouseX = rect.left;
+    lastMouseY = top;          // 存居中后的值，和 dy = top - lastMouseY 一致
+
     caret.show();
-    caret.snap(rect.left, top, h);
+    if (precisionActive) {
+      // 精密模式下直接跳到位，不走 smoothLoop，避免两层衰减叠加
+      stopSmoothLoop();
+      currentX = snapLeft;
+      currentY = snapTop;
+      currentHeight = h;
+      targetX = snapLeft;
+      targetY = snapTop;
+      targetHeight = h;
+      caret.el.style.transform = `translate(${snapLeft.toFixed(2)}px, ${snapTop.toFixed(2)}px)`;
+      caret.el.style.setProperty('height', `${h.toFixed(1)}px`, 'important');
+    } else {
+      caret.snap(snapLeft, snapTop, h);
+    }
   }
 
   function onMouseMove(e) {
     if (!enabled) return;
 
-    if (rightMouseDown && (e.buttons & 2)) {
+    // 右键拖动选字模式
+    if (CONFIG.selectionMode === 'rightClick' && rightMouseDown && (e.buttons & 2)) {
       const range = getTextPosition(e.clientX, e.clientY);
       if (range) {
         const selection = window.getSelection();
@@ -538,6 +625,18 @@
       const dy = e.clientY - rightStartY;
       if (Math.sqrt(dx * dx + dy * dy) > 4) {
         rightDragStarted = true;
+      }
+    }
+
+    // 按键拖动选字模式：按住 F/G/H + 移动鼠标即可选中
+    if (CONFIG.selectionMode === 'key' && selectionKeyDown) {
+      // X 跟随光标显示位置，Y 用原始文字行 top，避免精密模式纵向偏移
+      const range = getTextPosition(currentX, lastSnappedTop);
+      if (range) {
+        const selection = window.getSelection();
+        if (selection.anchorNode) {
+          selection.extend(range.startContainer, range.startOffset);
+        }
       }
     }
 
@@ -557,6 +656,9 @@
     if (!enabled) return;
 
     if (e.button === 2) {
+      // 按键选字模式下不干预右键，保持浏览器原生行为
+      if (CONFIG.selectionMode === 'key') return;
+
       const range = getTextPosition(e.clientX, e.clientY);
       if (!range) return;
 
@@ -597,6 +699,45 @@
       }
       updateMenuLabel();
     }
+
+    // 按键选字模式：按住 F/G/H 时，从磁吸光标当前吸附位置开始 snap 选区起点
+    if (CONFIG.selectionMode === 'key' && !e.repeat && e.code === 'Key' + CONFIG.selectionKey) {
+      // 不在输入框内才触发（避免干扰正常打字）
+      const tag = e.target.tagName ? e.target.tagName.toLowerCase() : '';
+      if (tag === 'input' || tag === 'textarea' || e.target.isContentEditable) return;
+
+      e.preventDefault();
+      selectionKeyDown = true;
+
+      // 选区起点：X 跟随光标显示位置（精密模式兼容），Y 用原始文字行 top（避免居中偏移）
+      let sx = currentX, sy = lastSnappedTop;
+      if ((sx === 0 && sy === 0 || !caret.visible) && pending) {
+        sx = pending.x;
+        sy = pending.y;
+      }
+      if (sx === 0 && sy === 0) return;
+
+      const range = getTextPosition(sx, sy);
+      if (range) {
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+    }
+
+    // 跟踪 Shift 状态（精密模式：按住 Shift 恢复原速，不阻止原生行为）
+    if (e.key === 'Shift' && !e.repeat) {
+      shiftKeyDown = true;
+    }
+  }
+
+  function onKeyUp(e) {
+    if (CONFIG.selectionMode === 'key' && e.code === 'Key' + CONFIG.selectionKey) {
+      selectionKeyDown = false;
+    }
+    if (e.key === 'Shift') {
+      shiftKeyDown = false;
+    }
   }
 
   function onVisibilityChange() {
@@ -614,6 +755,7 @@
     document.addEventListener('scroll', onScroll, { passive: true });
     window.addEventListener('resize', onResize, { passive: true });
     document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('keyup', onKeyUp);
     document.addEventListener('visibilitychange', onVisibilityChange);
   }
 
@@ -675,7 +817,15 @@
     setupEvents();
     setupMenu();
 
-    console.log('%c[Magnetic Cursor] v0.2.3 loaded — Alt+C toggle | Right-click-drag to select text', 'color: #4AA3FF; font-weight: bold');
+    console.log('%c[Magnetic Cursor] v0.2.5 loaded — Alt+C toggle | ' +
+      (CONFIG.selectionMode === 'key'
+        ? 'Hold ' + CONFIG.selectionKey + ' + move to select text'
+        : 'Right-click-drag to select text'),
+      'color: #4AA3FF; font-weight: bold');
+    if (CONFIG.precisionModeEnabled) {
+      console.log('%c[Precision] Threshold: <' + CONFIG.precisionFontThreshold + 'px | Speed: ' +
+        (CONFIG.precisionSlowFactor * 100) + '% | Hold Shift to restore', 'color: #FFA500');
+    }
 
     const cx = window.innerWidth / 2;
     const cy = window.innerHeight / 2;
