@@ -17,7 +17,7 @@
 // ==/UserScript==
 /*!
  * Magnetic Cursor v0.2.3
- * https://github.com/<your-handle>/magnetic-cursor
+ * https://github.com/3106928146-design/Magnetic-Cursor
  * MIT License
  */
 
