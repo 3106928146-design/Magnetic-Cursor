@@ -12,7 +12,6 @@
 - **平滑移动**：JS `requestAnimationFrame` + lerp 逐帧插值，不依赖 CSS transition，网页 CSS 无法覆盖。
 - **Shadow DOM 穿透**：递归穿透 open Shadow DOM，Bilibili 评论区、Lit 组件等场景均可吸附。
 - **高度可配置**：颜色、高度、发光、动画速度、闪烁、涟漪、精密模式阈值等全部集中到脚本顶部。（闪烁、涟漪暂不可用）
-- **尊重无障碍**：支持 `prefers-reduced-motion`，系统开启"减少动态效果"时自动关闭闪烁和涟漪。
 
 ## 安装
 
