@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Magnetic Cursor
 // @name:zh-CN   磁吸光标
-// @namespace    https://github.com/<your-handle>/magnetic-cursor
+// @namespace    https://github.com/3106928146-design/magnetic-cursor
 // @version      0.2.5
 // @description  Magnetic cursor that snaps to nearest text position
 // @description:zh-CN  鼠标在文本上移动时自动吸附到最近的文字插入位置
@@ -16,11 +16,6 @@
 // @license      MIT
 // @run-at       document-idle
 // ==/UserScript==
-/*!
- * Magnetic Cursor v0.2.5
- * https://github.com/<your-handle>/magnetic-cursor
- * MIT License
- */
 
 (function () {
   'use strict';
